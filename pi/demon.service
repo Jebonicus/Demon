@@ -1,0 +1,19 @@
+[Unit]
+Description=Talking demon (Pipecat voice bot)
+Wants=network-online.target
+After=network-online.target sound.target
+# Don't hammer the APIs if something's badly wrong
+StartLimitIntervalSec=300
+StartLimitBurst=20
+
+[Service]
+User=@USER@
+SupplementaryGroups=audio
+WorkingDirectory=@DIR@
+ExecStart=@DIR@/.venv/bin/python bot.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
