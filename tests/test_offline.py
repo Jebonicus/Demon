@@ -38,6 +38,11 @@ async def test_safety_filter():
     f = SentenceSafetyFilter("FALLBACK.", allowed_tags=tags)
     down, _ = await run_test(f, frames_to_send=[LLMTextFrame("Welcome! [laughs]"), LLMFullResponseEndFrame()])
     assert texts(down).strip() == "Welcome! [laughs]", texts(down)
+    # a reply cut off mid-word by max_tokens loses its unfinished tail
+    f = SentenceSafetyFilter("FALLBACK.")
+    down, _ = await run_test(f, frames_to_send=[
+        LLMTextFrame("Hello there. Mind the cau"), LLMFullResponseEndFrame()])
+    assert texts(down).strip() == "Hello there.", texts(down)
     print("safety filter OK")
 
 

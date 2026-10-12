@@ -35,6 +35,7 @@ from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.elevenlabs.dialogue.tts import ElevenLabsDialogueTTSService
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
+from pipecat.turns.user_mute import AlwaysUserMuteStrategy
 from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
     SpeechTimeoutUserTurnStopStrategy,
 )
@@ -44,12 +45,16 @@ from demon import persona
 from demon.fx import DemonVoiceFX
 from demon.presence import MicGate, PresenceController, start_mqtt
 from demon.safety import SentenceSafetyFilter
-from demon.transcripts import TranscriptLogger
+from demon.transcripts import LLMResponseLogger, TranscriptLogger, TTSLogger
 
 
 def env(name, default=None, cast=str):
     v = os.getenv(name)
     return default if v in (None, "") else cast(v)
+
+
+def parse_bool(v: str) -> bool:
+    return v.strip().lower() in ("1", "true", "yes", "on")
 
 
 def list_audio_devices():
@@ -125,7 +130,10 @@ def build_task(transport, sample_rate: int, gate: MicGate) -> PipelineWorker:
         settings=AnthropicLLMService.Settings(
             model=env("LLM_MODEL", "claude-haiku-5-5"),
             system_instruction=persona.system_prompt(audio_tags=audio_tags),
-            max_tokens=120,  # hard cap on rambling
+            max_tokens=150,  # hard cap on rambling
+            # Haiku 5.5 thinks adaptively unless told not to, and thinking tokens count
+            # against max_tokens: replies came back empty or cut off mid-word.
+            thinking=AnthropicLLMService.ThinkingConfig(type="disabled"),
             # (no temperature: current Claude models reject it)
         ),
     )
@@ -149,8 +157,17 @@ def build_task(transport, sample_rate: int, gate: MicGate) -> PipelineWorker:
             # Default answers a transcript-less turn that overlapped the bot by asking
             # the visitor to repeat themselves: the "didn't hear you" replies.
             empty_user_turn=None,
+            # Ignore the mic while the bot talks. Otherwise its own voice leaking back
+            # into the mic counts as the visitor interrupting, and cuts the reply off.
+            user_mute_strategies=(
+                [AlwaysUserMuteStrategy()] if env("MUTE_WHILE_SPEAKING", True, parse_bool) else []
+            ),
         ),
     )
+
+    @aggregators.user().event_handler("on_user_turn_started")
+    async def on_user_turn_started(aggregator, strategy):
+        logger.info(f"User turn started ({type(strategy).__name__})")
 
     @aggregators.user().event_handler("on_user_turn_stopped")
     async def on_user_turn_stopped(aggregator, strategy, message):
@@ -166,9 +183,11 @@ def build_task(transport, sample_rate: int, gate: MicGate) -> PipelineWorker:
         TranscriptLogger(),
         aggregators.user(),
         llm,
+        LLMResponseLogger(),
         SentenceSafetyFilter(persona.SAFE_FALLBACK_LINE,
                              allowed_tags=persona.AUDIO_TAGS if audio_tags else ()),
         tts,
+        TTSLogger(),
         DemonVoiceFX(
             preset=env("FX_PRESET", "demon"),
             semitones=env("FX_SEMITONES", -4.0, float),

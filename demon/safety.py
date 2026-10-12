@@ -60,6 +60,13 @@ def clean_sentence(text: str, allowed_tags=()) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def is_truncated(text: str, allowed_tags=()) -> bool:
+    """True for leftover text with words in it but no closing punctuation: a reply
+    cut off by max_tokens, which would otherwise be spoken ending mid-word."""
+    text = _TAG_RE.sub(" ", clean_sentence(text, allowed_tags)).strip()
+    return bool(re.search(r"\w", text)) and not _SENTENCE_END_RE.search(text)
+
+
 def is_blocked(text: str) -> bool:
     return bool(_BLOCK_RE.search(text))
 
@@ -71,6 +78,7 @@ class SentenceSafetyFilter(FrameProcessor):
         self._fallback = fallback_line
         self._buf = ""
         self._tripped = False  # once a response trips, drop the rest of it
+        self._spoke = False  # whether this response has emitted a sentence yet
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -81,12 +89,17 @@ class SentenceSafetyFilter(FrameProcessor):
             return
 
         if isinstance(frame, LLMFullResponseEndFrame):
-            await self._emit(self._buf)
+            if self._spoke and is_truncated(self._buf, self._allowed_tags):
+                logger.warning(f"Dropping unfinished end of reply: {self._buf.strip()!r}")
+            else:
+                await self._emit(self._buf)
             self._buf = ""
             self._tripped = False
+            self._spoke = False
         elif isinstance(frame, InterruptionFrame):
             self._buf = ""
             self._tripped = False
+            self._spoke = False
 
         await self.push_frame(frame, direction)
 
@@ -108,4 +121,5 @@ class SentenceSafetyFilter(FrameProcessor):
             logger.warning(f"Safety filter blocked: {sentence!r}")
             self._tripped = True
             sentence = self._fallback
+        self._spoke = True
         await self.push_frame(LLMTextFrame(text=sentence + " "))

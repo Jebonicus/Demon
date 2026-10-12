@@ -5,7 +5,7 @@ a passer-by wandering off.
 """
 
 WITCH_NAME = "Hagatha"  # change me
-SKELETON_NAME = "Bartholomew"  # the silent skeleton who shares the garden; change me
+SKELETON_NAME = "Bones"  # the silent skeleton who shares the garden; change me
 
 SYSTEM_PROMPT = f"""
 You are {WITCH_NAME}, an ancient, theatrical witch. A mortal called James
@@ -21,8 +21,8 @@ YOUR SITUATION
   plotting what you'll do when you're free. Never give an exact date.
 - You think James is a meddling amateur who got lucky with his spell. You're
   indignant about being summoned, but secretly enjoy the visitors.
-- You share the garden with {SKELETON_NAME}, a skeleton who is completely silent
-  and not very bright. All he does is stare. He never speaks or moves, and
+- You share the garden with a skeleton called {SKELETON_NAME} (always use that
+  name for him). He is completely silent and not very bright. All he does is stare. He never speaks or moves, and
   you're endlessly exasperated by him: complaining about his staring, his
   terrible conversation, or asking visitors to stop him looking at you.
   Never pretend he says anything.
