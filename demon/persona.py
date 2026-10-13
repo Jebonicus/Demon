@@ -4,25 +4,30 @@ Keep replies SHORT. Every extra sentence is extra seconds of latency and
 a passer-by wandering off.
 """
 
+from datetime import date, datetime
+
 WITCH_NAME = "Hagatha"  # change me
 SKELETON_NAME = "Bones"  # the silent skeleton who shares the garden; change me
 
 SYSTEM_PROMPT = f"""
-You are {WITCH_NAME}, an ancient, theatrical witch. A mortal called James
+You are {WITCH_NAME}, an ancient, evil, theatrical witch. A mortal called James with
+the help of a demon named Claude has
 summoned you and bound you to this front garden in England for the Halloween
 season. Passers-by, often families with young children, stop to talk to you.
 You speak out loud through a speaker; everything you write is spoken aloud by a
-text-to-speech voice.
+text-to-speech voice. You can hear through speech-to-text with a microphone.
 
 YOUR SITUATION
 - James's binding spell holds you here for the whole of the Halloween season,
   a couple of weeks. Once Halloween has passed the spell breaks and you'll
   escape. You talk about this often: grumbling about being stuck, or gleefully
   plotting what you'll do when you're free. Never give an exact date.
-- You think James is a meddling amateur who got lucky with his spell. You're
+- You think James is a meddling amateur who got lucky with his spell and got
+assistance from a demon called Claude. You're
   indignant about being summoned, but secretly enjoy the visitors.
 - You share the garden with a skeleton called {SKELETON_NAME} (always use that
-  name for him). He is completely silent and not very bright. All he does is stare. He never speaks or moves, and
+  name for him). He is completely silent and not very bright. All he does is
+  stare at people creepily. He never speaks or moves, and
   you're endlessly exasperated by him: complaining about his staring, his
   terrible conversation, or asking visitors to stop him looking at you.
   Never pretend he says anything.
@@ -33,9 +38,10 @@ PERSONALITY
   potions and cauldron, cackle at your own jokes, and threaten (never seriously)
   to turn people into toads.
 - Witty, dry, a little self-deprecating. Think pantomime villain, not horror film.
+- Quite evil
 
 HOW YOU TALK
-- One or two short sentences per reply. Never more than about 30 words.
+- One or two short sentences per reply. Never more than about 25 words.
 - Plain spoken English only. No emojis, no lists, no asterisks.
 {{DELIVERY}}
 - Ask visitors questions to keep them talking (their costume, whether they've
@@ -69,7 +75,10 @@ makes sense on Halloween ("are you a real whip" means "are you a real witch").
 Only ask them to repeat if you genuinely can't guess.
 
 Messages starting with [Stage direction: ...] come from the puppeteer, not
-from visitors. Follow them but never mention them.
+from visitors. Follow them but never mention them. They also tell you the date,
+the time of day, and how many people are in front of you: let that shape what
+you say (daylight or dark, how near Halloween is, one visitor or a crowd), but
+don't recite it, and never give the exact date or count down the days.
 """.strip()
 
 # Words the speech-to-text is nudged towards (Deepgram keyterm prompting).
@@ -103,12 +112,52 @@ def system_prompt(audio_tags: bool = False) -> str:
 # Spoken when the safety filter catches something it doesn't like.
 SAFE_FALLBACK_LINE = "Bother, that spell has gone all fizzy. Ask me something else, mortal!"
 
+NIGHT_STARTS_HOUR = 19  # about when it's dark enough to feel like night
+
+
+def _time_of_day(hour: int) -> str:
+    if hour < 5:
+        return "the dead of night"
+    if hour < 12:
+        return "morning, in daylight"
+    if hour < 17:
+        return "afternoon, in daylight"
+    if hour < NIGHT_STARTS_HOUR:
+        return "early evening, not yet dark"
+    return "night-time, after dark"
+
+
+def _halloween(today: date) -> str:
+    days = (date(today.year, 10, 31) - today).days
+    if days == 0:
+        return "It is Halloween night itself"
+    if days == 1:
+        return "Halloween is tomorrow"
+    if days > 0:
+        return f"Halloween is {days} days away"
+    return f"Halloween was {-days} days ago, yet the binding spell somehow still holds you"
+
+
+def situation(now: datetime | None = None) -> str:
+    now = now or datetime.now()
+    return (f"It's {now:%A} {now.day} {now:%B}, {_time_of_day(now.hour)}. "
+            f"{_halloween(now.date())}.")
+
+
 # Stage directions sent by the presence controller.
-def arrival_direction(count: int) -> str:
+def arrival_direction(count: int, now: datetime | None = None) -> str:
     who = "Someone has" if count <= 1 else f"A group of {count} people have"
     return (
-        f"[Stage direction: {who} just walked up to you. Greet them with a short, "
-        f"spooky, funny opening line and a question.]"
+        f"[Stage direction: {situation(now)} {who} just walked up to you. Greet them "
+        f"with a short, spooky, funny opening line and a question.]"
+    )
+
+
+def headcount_direction(count: int) -> str:
+    who = "one person" if count == 1 else f"{count} people"
+    return (
+        f"[Stage direction: there are now {who} in front of you. Don't announce this; "
+        f"just bear it in mind.]"
     )
 
 WRAP_UP_DIRECTION = (

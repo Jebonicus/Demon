@@ -225,7 +225,9 @@ async def main():
         return
 
     sample_rate = env("SAMPLE_RATE", 16000, int)
-    gate = MicGate(open_=args.always_present)
+    gate = MicGate(open_=args.always_present,
+                   mute_while_speaking=env("MUTE_WHILE_SPEAKING", True, parse_bool),
+                   tail_secs=env("ECHO_TAIL_SECS", 0.5, float))
     transport = build_transport(sample_rate)
     task = build_task(transport, sample_rate, gate)
     runner = WorkerRunner(handle_sigint=True, handle_sigterm=True)  # sigterm: clean stop under systemd

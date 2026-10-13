@@ -29,6 +29,8 @@ from enum import Enum
 from loguru import logger
 
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     Frame,
     InputAudioRawFrame,
     LLMMessagesAppendFrame,
@@ -46,20 +48,52 @@ class State(Enum):
 
 
 class MicGate(FrameProcessor):
-    """Drops mic audio unless the gate is open. Sits right after transport.input()."""
+    """Drops mic audio unless the gate is open. Sits right after transport.input().
 
-    def __init__(self, open_: bool = False, **kwargs):
+    With mute_while_speaking, it also swaps the mic for silence while the bot
+    talks and for tail_secs after, so speech-to-text never hears her own voice.
+    The user aggregator's mute isn't enough on its own: it sits after STT, and
+    Deepgram's transcript of her last words arrives after she has stopped, by
+    which point that mute has lifted and her words count as the visitor's.
+    Silence rather than nothing, so Deepgram wraps up any half-heard words
+    while still muted instead of finishing them late.
+    """
+
+    def __init__(self, open_: bool = False, mute_while_speaking: bool = False,
+                 tail_secs: float = 0.5, **kwargs):
         super().__init__(**kwargs)
         self.is_open = open_
+        self._mute_while_speaking = mute_while_speaking
+        self._tail_secs = tail_secs
+        self._bot_speaking = False
+        self._muted_until = 0.0
+
+    def _hearing_bot(self) -> bool:
+        return self._mute_while_speaking and (
+            self._bot_speaking or time.monotonic() < self._muted_until)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        if isinstance(frame, InputAudioRawFrame) and not self.is_open:
-            return
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+            self._muted_until = time.monotonic() + self._tail_secs
+        elif isinstance(frame, InputAudioRawFrame):
+            if not self.is_open:
+                return
+            if self._hearing_bot():
+                frame = InputAudioRawFrame(audio=bytes(len(frame.audio)),
+                                           sample_rate=frame.sample_rate,
+                                           num_channels=frame.num_channels)
         await self.push_frame(frame, direction)
 
 
 class PresenceController:
+    # A new head count must hold this long before she's told about it, so a
+    # tracker flickering between 2 and 3 doesn't send her a stream of updates.
+    COUNT_SETTLE_SECS = 3.0
+
     def __init__(self, task, gate: MicGate, *, engage_dist: float, leave_secs: float,
                  max_session_secs: float):
         self._task = task
@@ -70,6 +104,9 @@ class PresenceController:
         self.state = State.IDLE
         self._last_seen = 0.0
         self._session_start = 0.0
+        self._told_count = 0
+        self._new_count = 0
+        self._new_count_since = 0.0
         self._events: asyncio.Queue = asyncio.Queue()
 
     # --- called from the MQTT thread ------------------------------------
@@ -101,6 +138,24 @@ class PresenceController:
         close_enough = count > 0 and (nearest is None or float(nearest) <= self._engage_dist)
         if self.state == State.IDLE and close_enough:
             await self._engage(count)
+        elif self.state == State.ENGAGED and count > 0:
+            await self._track_count(count)
+
+    async def _track_count(self, count: int):
+        now = time.monotonic()
+        if count == self._told_count:
+            self._new_count = 0
+            return
+        if count != self._new_count:
+            self._new_count, self._new_count_since = count, now
+            return
+        if now - self._new_count_since >= self.COUNT_SETTLE_SECS:
+            logger.info(f"Head count now {count}")
+            self._told_count, self._new_count = count, 0
+            await self._task.queue_frames([LLMMessagesAppendFrame(
+                messages=[{"role": "user", "content": persona.headcount_direction(count)}],
+                run_llm=False,
+            )])
 
     async def _tick(self):
         now = time.monotonic()
@@ -131,6 +186,7 @@ class PresenceController:
         logger.info(f"Engaging: {count} visitor(s)")
         self.state = State.ENGAGED
         self._session_start = time.monotonic()
+        self._told_count, self._new_count = count, 0
         self._gate.is_open = True
         await self._task.queue_frames([
             LLMMessagesUpdateFrame(
