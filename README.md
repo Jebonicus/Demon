@@ -19,6 +19,7 @@ camera (JebCam Pi 5) ──MQTT halloween/presence──▶ demon Pi 3A+
 | `demon/safety.py` | Checks every sentence before it's spoken; strips `*stage directions*` |
 | `demon/fx.py` | Voice effects: low-latency pitch-down, growl, small reverb, limiter |
 | `demon/presence.py` | Camera-triggered start/stop; mic is closed when nobody's there |
+| `demon/lights.py` | Crystal ball (GPO pin 11, lit by the witch's `[crystal ball on/off]` cues) and eyes (pin 39, daytime when someone's in view) |
 | `jebcam_addon/presencePublisher.py` | Goes into JebCam to publish who's in front of the house |
 | `pi/install.sh` | One-shot Pi setup |
 | `pi/audio-setup.sh` | Makes the XVF3800 the default device, with a volume ceiling |

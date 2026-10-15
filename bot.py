@@ -3,7 +3,7 @@
 
 Pipeline:
   mic ─▶ MicGate ─▶ Deepgram STT ─▶ context ─▶ Claude ─▶ safety filter
-      ─▶ ElevenLabs TTS ─▶ demon FX ─▶ speaker
+      ─▶ crystal ball cues ─▶ ElevenLabs TTS ─▶ demon FX ─▶ speaker
 
 Run on a laptop for testing (always listening):
     python bot.py --always-present
@@ -43,6 +43,8 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from demon import persona
 from demon.fx import DemonVoiceFX
+from demon.lights import (BALL_CUES, CRYSTAL_BALL_PIN, EYES_PIN, CrystalBall, Light, XVFGpo,
+                          parse_hours)
 from demon.presence import MicGate, PresenceController, start_mqtt
 from demon.safety import SentenceSafetyFilter
 from demon.transcripts import LLMResponseLogger, TranscriptLogger, TTSLogger
@@ -116,7 +118,7 @@ def build_tts(sample_rate: int):
     )
 
 
-def build_task(transport, sample_rate: int, gate: MicGate) -> PipelineWorker:
+def build_task(transport, sample_rate: int, gate: MicGate, ball: CrystalBall) -> PipelineWorker:
     audio_tags = uses_dialogue_api(env("ELEVENLABS_MODEL", "eleven_flash_v2_5"))
     stt = DeepgramSTTService(
         api_key=os.environ["DEEPGRAM_API_KEY"],
@@ -185,7 +187,8 @@ def build_task(transport, sample_rate: int, gate: MicGate) -> PipelineWorker:
         llm,
         LLMResponseLogger(),
         SentenceSafetyFilter(persona.SAFE_FALLBACK_LINE,
-                             allowed_tags=persona.AUDIO_TAGS if audio_tags else ()),
+                             allowed_tags=(persona.AUDIO_TAGS if audio_tags else ()) + BALL_CUES),
+        ball.cues,  # strips the cues, so it must come before the TTS
         tts,
         TTSLogger(),
         DemonVoiceFX(
@@ -194,6 +197,7 @@ def build_task(transport, sample_rate: int, gate: MicGate) -> PipelineWorker:
             highpass_hz=env("FX_HIGHPASS_HZ", 180.0, float),
         ),
         transport.output(),
+        ball.playback,  # sees each word as it's played, to time the ball
         aggregators.assistant(),
     ])
 
@@ -228,8 +232,14 @@ async def main():
     gate = MicGate(open_=args.always_present,
                    mute_while_speaking=env("MUTE_WHILE_SPEAKING", True, parse_bool),
                    tail_secs=env("ECHO_TAIL_SECS", 0.5, float))
+    gpo = XVFGpo()
+    eyes = Light(gpo, env("EYES_PIN", EYES_PIN, int), "Eyes")
+    ball = CrystalBall(Light(gpo, env("CRYSTAL_BALL_PIN", CRYSTAL_BALL_PIN, int), "Crystal ball"),
+                       max_on_secs=env("BALL_MAX_SECS", 40.0, float))
+    await eyes.set(False)  # known state, whatever a previous run left on
+    await ball.turn_off()
     transport = build_transport(sample_rate)
-    task = build_task(transport, sample_rate, gate)
+    task = build_task(transport, sample_rate, gate, ball)
     runner = WorkerRunner(handle_sigint=True, handle_sigterm=True)  # sigterm: clean stop under systemd
 
     side_tasks = []
@@ -244,6 +254,7 @@ async def main():
             engage_dist=env("ENGAGE_DIST", 250.0, float),
             leave_secs=env("LEAVE_SECS", 8.0, float),
             max_session_secs=env("MAX_SESSION_SECS", 180.0, float),
+            eyes=eyes, eyes_hours=env("EYES_HOURS", (7, 18), parse_hours), ball=ball,
         )
         start_mqtt(controller, asyncio.get_running_loop(),
                    host=env("MQTT_HOST", "localhost"), port=env("MQTT_PORT", 1883, int),
@@ -257,6 +268,8 @@ async def main():
     finally:
         for t in side_tasks:
             t.cancel()
+        await eyes.set(False)
+        await ball.turn_off()
 
 
 if __name__ == "__main__":

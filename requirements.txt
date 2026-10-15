@@ -3,3 +3,4 @@ paho-mqtt>=2.0
 pedalboard>=0.9
 python-dotenv
 numpy
+pyusb

@@ -34,6 +34,11 @@ python3 -m venv "$DEST/.venv"
 "$DEST/.venv/bin/pip" install --upgrade pip wheel
 "$DEST/.venv/bin/pip" install -r "$DEST/requirements.txt"
 
+echo "==> Letting the bot switch the XVF3800's GPO pins (crystal ball, eyes) without sudo"
+echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="2886", MODE="0666"' | \
+  sudo tee /etc/udev/rules.d/99-respeaker.rules >/dev/null
+sudo udevadm control --reload-rules && sudo udevadm trigger
+
 echo "==> Turning off Wi-Fi power saving (it adds big latency spikes)"
 for c in $(nmcli -t -f NAME,TYPE connection show | awk -F: '$2=="802-11-wireless"{print $1}'); do
   sudo nmcli connection modify "$c" 802-11-wireless.powersave 2 || true

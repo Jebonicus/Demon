@@ -10,6 +10,7 @@ from pipecat.tests.utils import run_test
 from demon.safety import SentenceSafetyFilter, clean_sentence, is_blocked
 from demon.fx import DemonVoiceFX
 from demon.presence import MicGate, PresenceController, State
+from demon.lights import BALL_CUES, CrystalBall, Light, in_hours, parse_hours
 from demon import persona
 
 
@@ -122,7 +123,7 @@ async def test_presence():
 def test_situation():
     from datetime import datetime
     s = persona.arrival_direction(3, datetime(2026, 10, 13, 20, 5))
-    assert "Tuesday 13 October" in s and "after dark" in s and "18 days away" in s and "group of 3" in s
+    assert "Tuesday 13 October, 20:05" in s and "crystal ball" in s and "after dark" in s and "18 days away" in s and "group of 3" in s
     assert "daylight" in persona.situation(datetime(2026, 10, 13, 15, 0))
     assert "not yet dark" in persona.situation(datetime(2026, 10, 13, 18, 30))
     assert "Halloween night itself" in persona.situation(datetime(2026, 10, 31, 19, 0))
@@ -152,6 +153,84 @@ async def test_gate():
     print("mic gate OK")
 
 
+class FakeGpo:
+    def __init__(self, ok=True): self.writes, self.ok = [], ok
+    def write(self, pin, on): self.writes.append((pin, on)); return self.ok
+
+
+async def test_crystal_ball():
+    from pipecat.frames.frames import TTSTextFrame
+    gpo = FakeGpo()
+    ball = CrystalBall(Light(gpo, 11, "Crystal ball"), max_on_secs=0.3)
+    # the safety filter lets the cues through; the ball strips them before the TTS
+    f = SentenceSafetyFilter("FALLBACK.", allowed_tags=BALL_CUES)
+    down, _ = await run_test(f, frames_to_send=[
+        LLMTextFrame("Hee hee! Let me look. [Crystal Ball On] I see sprouts in your fut"),
+        LLMTextFrame("ure! [crystal ball off] Now, your costume?"), LLMFullResponseEndFrame()])
+    assert texts(down) == ("Hee hee! Let me look. [crystal ball on] I see sprouts in your future! "
+                           "[crystal ball off] Now, your costume? "), texts(down)
+    down, _ = await run_test(ball.cues, frames_to_send=[f for f in down if isinstance(f, LLMTextFrame)])
+    assert texts(down) == "Hee hee! Let me look. I see sprouts in your future! Now, your costume? ", texts(down)
+    assert gpo.writes == []  # nothing until she actually says it
+
+    async def play(word):  # the speaker reaching each word, as ElevenLabs' timings say
+        await ball.playback.process_frame(TTSTextFrame(word, aggregated_by="word"), FrameDirection.DOWNSTREAM)
+
+    for w in "Hee hee! Let me look.".split():
+        await play(w)
+    assert gpo.writes == []
+    await play("I")  # first word after the cue
+    assert gpo.writes == [(11, True)]
+    for w in "see sprouts in your future!".split():
+        await play(w)
+    assert gpo.writes == [(11, True)]
+    await play("Now,")
+    assert gpo.writes == [(11, True), (11, False)]
+    await ball.playback.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    # a cue at the very end waits for her to stop talking
+    await run_test(ball.cues, frames_to_send=[LLMTextFrame("[crystal ball on] Ooh! "), LLMTextFrame("[crystal ball off]")])
+    await play("Ooh!")
+    assert ball.is_on
+    await ball.playback.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    assert not ball.is_on
+    # words the TTS never reports still can't strand a cue: stopping applies it
+    await run_test(ball.cues, frames_to_send=[LLMTextFrame("Look! [crystal ball on] Ooh. ")])
+    await ball.playback.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    assert ball.is_on
+    # forgotten: goes off by itself
+    await asyncio.sleep(0.4)
+    assert not ball.is_on and gpo.writes[-1] == (11, False)
+    # no hardware: nothing raises, and state stays unknown so it retries
+    dead = Light(FakeGpo(ok=False), 39, "Eyes")
+    await dead.set(True)
+    assert dead.is_on is None
+    print("crystal ball OK")
+
+
+async def test_eyes():
+    from datetime import datetime
+    assert parse_hours("8-17") == (8, 17)
+    assert in_hours((8, 17), datetime(2026, 10, 15, 16, 59)) and not in_hours((8, 17), datetime(2026, 10, 15, 17, 0))
+    gpo = FakeGpo()
+    eyes, ball = Light(gpo, 39, "Eyes"), CrystalBall(Light(gpo, 11, "Crystal ball"))
+    task, gate = FakeTask(), MicGate()
+    c = PresenceController(task, gate, engage_dist=250, leave_secs=0.2, max_session_secs=60,
+                           eyes=eyes, eyes_hours=(0, 24), ball=ball)
+    await c._tick()
+    assert eyes.is_on is False
+    await c._on_presence(json.dumps({"count": 1, "nearest": 900}).encode())  # far away still counts
+    await c._tick()
+    assert eyes.is_on and c.state == State.IDLE
+    await ball.turn_on()
+    await c._on_presence(b'{"count": 1}'); await c._tick()
+    await asyncio.sleep(0.3); await c._tick()
+    assert c.state == State.IDLE and eyes.is_on is False and not ball.is_on
+    c._eyes_hours = (0, 0)  # night: never on
+    await c._on_presence(b'{"count": 1}'); await c._tick()
+    assert eyes.is_on is False
+    print("eyes OK")
+
+
 def test_tts_selection():
     import os
     os.environ.update(ELEVENLABS_API_KEY="x", ELEVENLABS_VOICE_ID="v")
@@ -170,6 +249,7 @@ def test_tts_selection():
 async def main():
     test_tts_selection()
     await test_safety_filter(); await test_fx(); await test_presence(); await test_gate()
+    await test_crystal_ball(); await test_eyes()
     test_situation()
     print("ALL PASSED")
 

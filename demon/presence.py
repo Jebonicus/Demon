@@ -16,6 +16,10 @@ distance from the figure, in whatever units the publisher uses (JebCam's
 tracker works in pixels from its reference point, so ENGAGE_DIST is in
 pixels too). Omit "nearest" to engage on count alone.
 
+During eyes_hours (daytime: they're too bright after dark) the eyes light up
+whenever anyone is in view, near or far, and go off LEAVE_SECS after the
+last sighting. The crystal ball is switched off whenever visitors leave.
+
 The mic is gated closed while IDLE, so you don't pay to stream the street
 to the speech-to-text service all evening, and the demon can't be woken by
 a conversation on the pavement.
@@ -24,6 +28,7 @@ a conversation on the pavement.
 import asyncio
 import json
 import time
+from datetime import datetime
 from enum import Enum
 
 from loguru import logger
@@ -39,6 +44,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from . import persona
+from .lights import CrystalBall, Light, in_hours
 
 
 class State(Enum):
@@ -95,8 +101,12 @@ class PresenceController:
     COUNT_SETTLE_SECS = 3.0
 
     def __init__(self, task, gate: MicGate, *, engage_dist: float, leave_secs: float,
-                 max_session_secs: float):
+                 max_session_secs: float, eyes: Light | None = None,
+                 eyes_hours: tuple[int, int] = (8, 17), ball: CrystalBall | None = None):
         self._task = task
+        self._eyes = eyes
+        self._eyes_hours = eyes_hours
+        self._ball = ball
         self._gate = gate
         self._engage_dist = engage_dist
         self._leave_secs = leave_secs
@@ -160,6 +170,8 @@ class PresenceController:
     async def _tick(self):
         now = time.monotonic()
         gone = now - self._last_seen > self._leave_secs
+        if self._eyes:
+            await self._eyes.set(not gone and in_hours(self._eyes_hours, datetime.now()))
 
         if self.state == State.ENGAGED:
             if gone:
@@ -199,6 +211,8 @@ class PresenceController:
         logger.info(f"Back to idle ({why}); clearing conversation")
         self.state = State.IDLE
         self._gate.is_open = False
+        if self._ball:
+            await self._ball.turn_off()
         await self._task.queue_frames([LLMMessagesUpdateFrame(messages=[], run_llm=False)])
 
 
