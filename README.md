@@ -282,7 +282,7 @@ Most of the people talking to her will be young children, so safety is layered:
 
 ```mermaid
 flowchart LR
-    A["Visitor speech"] --> B["System prompt rules<br/><i>child-safe, no personal details,<br/>refuse adult topics in character,<br/>ignore 'ignore your instructions'</i>"]
+    A["Visitor speech"] --> B["System prompt rules<br/><i>child-safe, first names only,<br/>refuse adult topics in character,<br/>ignore 'ignore your instructions'</i>"]
     B --> C["Claude reply"]
     C --> D{"Sentence filter<br/><i>blocked-word list</i>"}
     D -- clean --> E["Strip stage directions<br/><i>*laughs*, (cackles)</i><br/>keep allowed [audio tags]"]
@@ -293,7 +293,7 @@ flowchart LR
 ```
 
 - **Persona rules** do the real work. She's spooky and silly but never frightening, with no gore,
-  weapons or harm, and not even mild swearing. She never asks for or repeats names, ages, schools
+  weapons or harm, and not even mild swearing. She never asks for names. If a visitor volunteers a first name she'll happily use it, but she never asks for or repeats surnames, ages, schools
   or addresses. She refuses politics, religion, real people, drugs and alcohol in character and
   changes the subject. If a child seems scared, she drops the act and reassures them that she's
   just a silly decoration.
@@ -469,7 +469,8 @@ combine a randomly chosen angle with a randomly chosen question.
 - The mic is closed whenever nobody is near the figure.
 - Transcripts of what's said, and the witch's replies, are written to the system journal (and to
   syslog under the tag `demon-transcript`) for debugging: `journalctl -t demon-transcript`.
-- The persona never asks for, or repeats, personal details.
+- The persona never asks for personal details. A first name a visitor volunteers may be used
+  during the chat, and it's forgotten when they leave, because the conversation is cleared.
 - Audio is streamed to Deepgram and text to Anthropic and ElevenLabs to make the conversation
   work, under their respective API terms.
 
