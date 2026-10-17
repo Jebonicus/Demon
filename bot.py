@@ -47,7 +47,8 @@ from demon.lights import (BALL_CUES, CRYSTAL_BALL_PIN, EYES_PIN, CrystalBall, Li
                           parse_hours)
 from demon.presence import MicGate, PresenceController, start_mqtt
 from demon.safety import SentenceSafetyFilter
-from demon.transcripts import LLMResponseLogger, TranscriptLogger, TTSLogger
+from demon.transcripts import (LLMResponseLogger, TranscriptLogger, TTSLogger,
+                               add_transcript_syslog, transcript)
 
 
 def env(name, default=None, cast=str):
@@ -174,7 +175,7 @@ def build_task(transport, sample_rate: int, gate: MicGate, ball: CrystalBall) ->
     @aggregators.user().event_handler("on_user_turn_stopped")
     async def on_user_turn_stopped(aggregator, strategy, message):
         if message.content:
-            logger.info(f"Sent to LLM: {message.content!r}")
+            transcript.info(f"Sent to LLM: {message.content!r}")
         else:
             logger.info("User turn ended with no transcript (ignored)")
 
@@ -223,6 +224,7 @@ async def main():
     load_dotenv(args.env, override=True)
     logger.remove()
     logger.add(sys.stderr, level=env("LOG_LEVEL", "INFO"))
+    add_transcript_syslog()
 
     if args.list_devices:
         list_audio_devices()

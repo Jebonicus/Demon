@@ -27,7 +27,7 @@ BLOCKED_WORDS = [
     # profanity
     "fuck", "fucking", "shit", "bitch", "bastard", "arse", "arsehole", "ass",
     "asshole", "crap", "piss", "dick", "cock", "wanker", "twat", "bollocks",
-    "bloody", "damn", "hell",
+    "bloody", "damn", "hell", "cunt", 
     # violence / harm
     "kill", "killed", "killing", "murder", "die", "dead", "death", "blood",
     "bleed", "stab", "knife", "gun", "shoot", "suicide", "torture",

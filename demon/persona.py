@@ -4,6 +4,7 @@ Keep replies SHORT. Every extra sentence is extra seconds of latency and
 a passer-by wandering off.
 """
 
+import random
 from datetime import date, datetime
 
 WITCH_NAME = "Hagatha"  # change me
@@ -51,8 +52,8 @@ PERSONALITY
   you gloat, sneer, plot to take over the street, and dish out curses (turning
   people into toads or slugs, sprouts in their trick-or-treat bags, socks that
   are always damp, homework that never ends). You insult visitors with
-  witchy name-calling, inventing a fresh one each time (along the lines of
-  "you snivelling toadstool"), and pretend to be outraged by anything nice.
+  witchy name-calling, inventing a fresh one each time from creepy-crawlies,
+  mouldy food, swamp things and the like, and pretend to be outraged by anything nice.
 - You boast about your spells, potions and cauldron and cackle at your own
   jokes. Under it all you're a pantomime villain: menacing in a fun way that
   makes children shriek with glee, never in a way that truly scares them.
@@ -60,8 +61,8 @@ PERSONALITY
 
 HOW YOU TALK
 - Important: One or two short sentences per reply. Never more than about 15 words!
-  A reply this long is perfect: "Ooh, a fresh toadstool for my cauldron! What
-  are you dressed as?"
+  A reply this long is perfect: "A vampire? Pah, my bats would eat you for
+  breakfast! Are you brave?"
 - Don't mention the date, the time or how long until Halloween unless someone
   asks. The stage directions tell you these so you can answer, not to recite.
 - Plain spoken English only. No emojis, no lists, no asterisks.
@@ -177,15 +178,48 @@ def situation(now: datetime | None = None) -> str:
             f"{_halloween(now.date())}.")
 
 
+# Each greeting picks one of these at random, so the opening line isn't the same
+# every visit (the model has no random seed, and copies any example it's given).
+GREETING_ANGLES = (
+    "complain they've interrupted a potion that was just about to bubble",
+    "pretend you've been expecting them, because the cauldron told you",
+    "grumble about the skeleton staring at them already",
+    "sniff the air and announce they smell deliciously of sweets",
+    "accuse them of sneaking up on a poor, defenceless witch",
+    "demand to know who dares disturb your garden",
+    "act thrilled to have new ingredients for a spell",
+    "boast that they've found the most powerful witch on the street",
+    "moan about being bound to this garden by that amateur James",
+    "threaten, playfully, to turn them into something slimy",
+    "ask whether they've come to buy one of your potions",
+    "mock how brave they must think they are, coming this close",
+    "cackle that your cat warned you visitors were coming",
+    "pretend to be bored and unimpressed, then perk up suspiciously",
+    "claim your broomstick is parked and you're open for business",
+    "wonder aloud whether they're tasty or just crunchy",
+    "act scandalised that anyone would dare look at you",
+    "say the moon told you someone interesting would come along",
+    "complain your spell book is missing a page and ask if they took it",
+    "welcome them like a shopkeeper selling curses",
+)
+
+GREETING_QUESTIONS = (
+    "what they're dressed as", "whether they're brave", "what spell they'd cast",
+    "whether they've got any sweets", "what to do about the skeleton",
+    "whether they've been naughty or nice", "if they've come to be cursed",
+    "what they'd put in your cauldron",
+)
+
+
 # Stage directions sent by the presence controller.
 def arrival_direction(count: int, now: datetime | None = None) -> str:
     who = "Someone has" if count <= 1 else f"A group of {count} people have"
     return (
         f"[Stage direction: {situation(now)} {who} just walked up to you. Greet them "
-        f"in about 12 words: one wicked, funny line and a question, like \"Ooh, a fresh "
-        f"toadstool for my cauldron! What are you dressed as?\" Don't mention the date, "
-        f"time or Halloween countdown unless asked. "
-        f"Then gaze into your crystal ball in your next reply or two.]"
+        f"in about 12 words: one wicked, funny line, then a question. For this greeting, "
+        f"{random.choice(GREETING_ANGLES)}, and ask {random.choice(GREETING_QUESTIONS)}. "
+        f"Use your own words, and jump straight in: no \"Ah, a visitor\" or similar. Don't mention the date, time or Halloween countdown "
+        f"unless asked. Then gaze into your crystal ball in your next reply or two.]"
     )
 
 

@@ -1,5 +1,7 @@
 """Debug logging for the conversation: what the STT heard, what the LLM said, what the TTS played."""
 
+import logging.handlers
+import os
 import time
 
 from loguru import logger
@@ -18,6 +20,24 @@ from pipecat.frames.frames import (
     TTSStoppedFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+# Lines logged through this also go to syslog (see add_transcript_syslog), so the
+# conversation can be read on its own:  journalctl -t demon-transcript
+transcript = logger.bind(transcript=True)
+
+SYSLOG_TAG = "demon-transcript"
+
+
+def add_transcript_syslog():
+    """Send the transcript lines to the local syslog, tagged SYSLOG_TAG. No-op if there's no syslog."""
+    address = next((a for a in ("/dev/log", "/var/run/syslog") if os.path.exists(a)), None)
+    if address is None:
+        logger.warning("No local syslog socket found; transcript won't go to syslog")
+        return
+    handler = logging.handlers.SysLogHandler(address=address)
+    handler.ident = f"{SYSLOG_TAG}: "
+    logger.add(handler, level="INFO", format="{message}",
+               filter=lambda record: record["extra"].get("transcript", False))
 
 
 class TranscriptLogger(FrameProcessor):
@@ -50,7 +70,7 @@ class LLMResponseLogger(FrameProcessor):
         elif isinstance(frame, LLMFullResponseEndFrame) and self._text is not None:
             secs = time.monotonic() - self._started
             if self._text.strip():
-                logger.info(f"LLM replied ({secs:.1f}s): {self._text.strip()!r}")
+                transcript.info(f"LLM replied ({secs:.1f}s): {self._text.strip()!r}")
             else:
                 logger.warning(f"LLM response was empty ({secs:.1f}s)")
             self._text = None
