@@ -3,13 +3,14 @@ import asyncio, json, time
 import numpy as np
 from pipecat.frames.frames import (LLMTextFrame, LLMFullResponseEndFrame, TTSAudioRawFrame,
     TTSStoppedFrame, InputAudioRawFrame, LLMMessagesUpdateFrame, LLMMessagesAppendFrame,
-    BotStartedSpeakingFrame, BotStoppedSpeakingFrame)
+    BotStartedSpeakingFrame, BotStoppedSpeakingFrame, TranscriptionFrame, InterimTranscriptionFrame)
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.tests.utils import run_test
 
 from demon.safety import SentenceSafetyFilter, clean_sentence, is_blocked
 from demon.fx import DemonVoiceFX
 from demon.presence import MicGate, PresenceController, State
+from demon.admin import AdminCommands, split_magic
 from demon.lights import BALL_CUES, CrystalBall, Light, in_hours, parse_hours
 from demon import persona
 
@@ -228,7 +229,71 @@ async def test_eyes():
     c._eyes_hours = (0, 0)  # night: never on
     await c._on_presence(b'{"count": 1}'); await c._tick()
     assert eyes.is_on is False
+    # pinned by an admin command: the camera no longer switches them
+    await eyes.force(True); await c._tick()  # still night
+    assert eyes.is_on
+    c._eyes_hours = (0, 24)
+    await eyes.force(False); await c._tick()  # someone's in view
+    assert eyes.is_on is False
+    await eyes.force(None); await c._tick()
+    assert eyes.is_on
     print("eyes OK")
+
+
+async def test_admin():
+    assert split_magic("Sudo, reset.") == "reset" and split_magic("Pseudo crystal-ball ON") == "crystal ball on"
+    assert split_magic("sudo") == "" and split_magic("I'm a sudoku fan") is None
+    gpo = FakeGpo()
+    eyes, ball = Light(gpo, 39, "Eyes"), CrystalBall(Light(gpo, 11, "Crystal ball"), max_on_secs=0.1)
+    task, gate = FakeTask(), MicGate()
+    admin = AdminCommands(eyes, ball)
+    c = PresenceController(task, gate, engage_dist=250, leave_secs=5, max_session_secs=0,
+                           eyes=eyes, eyes_hours=(0, 0), ball=ball, admin=admin)
+    admin.reset = c.reset
+
+    def said(text):
+        return TranscriptionFrame(text, "user", "now")
+
+    # commands are swallowed; ordinary speech goes through
+    down, _ = await run_test(admin, frames_to_send=[
+        said("Sudo eyes on."), said("sudo crystal ball on"), said("Are you a witch?"),
+        InterimTranscriptionFrame("sudo eyes", "user", "now")])
+    assert [f.text for f in down if isinstance(f, (TranscriptionFrame, InterimTranscriptionFrame))] == ["Are you a witch?"]
+    assert eyes.is_on and eyes.forced and ball.is_on
+    await asyncio.sleep(0.15)
+    assert ball.is_on  # held: no auto-off
+    # a pause after the magic word: the next transcript is the command
+    down, _ = await run_test(admin, frames_to_send=[said("Sudo."), said("Eyes off."), said("sudo crystal ball off")])
+    assert not any(isinstance(f, TranscriptionFrame) for f in down)
+    assert eyes.is_on is False and not ball.is_on
+    # session limit: farewell, mic stays open for commands only
+    await c._on_presence(b'{"count": 2}'); await c._tick()
+    assert c.state == State.COOLDOWN and gate.is_open and admin.commands_only
+    down, _ = await run_test(admin, frames_to_send=[said("Bye witch!")])
+    assert not any(isinstance(f, TranscriptionFrame) for f in down)
+    # sudo reset: fresh chat, as if they'd just arrived
+    n = len(task.queued)
+    c._max_session = 60
+    await run_test(admin, frames_to_send=[said("sudo reset")])
+    assert c.state == State.ENGAGED and not admin.commands_only and gate.is_open
+    f = task.queued[n]
+    assert isinstance(f, LLMMessagesUpdateFrame) and f.run_llm and "group of 2" in f.messages[0]["content"]
+    print("admin OK")
+
+
+async def test_stale_context():
+    import os
+    os.environ.setdefault("ANTHROPIC_API_KEY", "x")
+    import bot
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    llm = bot.WitchLLM(api_key="x")
+    await llm._process_context(LLMContext())  # cleared conversation: no request, no error
+    # controller frames queued before the pipeline starts are delivered once it has
+    from demon.presence import FrameInlet, greeting
+    inlet = FrameInlet()
+    await inlet.queue_frames([greeting(1)])
+    down, _ = await run_test(inlet, frames_to_send=[], expected_down_frames=[LLMMessagesUpdateFrame])
+    print("stale context OK")
 
 
 def test_tts_selection():
@@ -249,7 +314,7 @@ def test_tts_selection():
 async def main():
     test_tts_selection()
     await test_safety_filter(); await test_fx(); await test_presence(); await test_gate()
-    await test_crystal_ball(); await test_eyes()
+    await test_crystal_ball(); await test_eyes(); await test_admin(); await test_stale_context()
     test_situation()
     print("ALL PASSED")
 

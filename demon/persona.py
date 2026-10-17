@@ -120,6 +120,7 @@ STT_KEYTERMS = (
     "cauldron", "broomstick", "toad", "black cat", "skeleton", "ghost", "vampire",
     "zombie", "mummy", "werewolf", "pumpkin", "spooky", "costume",
     "trick or treat", "sweets", "Halloween",
+    "sudo", "crystal ball",  # admin commands (demon/admin.py)
 )
 
 # Performance tags that ElevenLabs v3/v4 voices act out instead of reading

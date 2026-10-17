@@ -2,7 +2,7 @@
 """Talking demon for the front garden.
 
 Pipeline:
-  mic ─▶ MicGate ─▶ Deepgram STT ─▶ context ─▶ Claude ─▶ safety filter
+  mic ─▶ MicGate ─▶ Deepgram STT ─▶ admin commands ─▶ context ─▶ Claude ─▶ safety filter
       ─▶ crystal ball cues ─▶ ElevenLabs TTS ─▶ demon FX ─▶ speaker
 
 Run on a laptop for testing (always listening):
@@ -22,10 +22,9 @@ from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
-from pipecat.frames.frames import LLMMessagesUpdateFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.workers.runner import WorkerRunner
-from pipecat.pipeline.worker import PipelineParams, PipelineWorker
+from pipecat.pipeline.worker import PipelineParams, PipelineWorker, ProcessorUnusablePolicy
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
@@ -42,10 +41,11 @@ from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from demon import persona
+from demon.admin import AdminCommands
 from demon.fx import DemonVoiceFX
 from demon.lights import (BALL_CUES, CRYSTAL_BALL_PIN, EYES_PIN, CrystalBall, Light, XVFGpo,
                           parse_hours)
-from demon.presence import MicGate, PresenceController, start_mqtt
+from demon.presence import FrameInlet, MicGate, PresenceController, greeting, start_mqtt
 from demon.safety import SentenceSafetyFilter
 from demon.transcripts import (LLMResponseLogger, TranscriptLogger, TTSLogger,
                                add_transcript_syslog, transcript)
@@ -119,7 +119,19 @@ def build_tts(sample_rate: int):
     )
 
 
-def build_task(transport, sample_rate: int, gate: MicGate, ball: CrystalBall) -> PipelineWorker:
+class WitchLLM(AnthropicLLMService):
+    async def _process_context(self, context):
+        # A context frame holds the live context, not a copy, so one queued just
+        # before visitors leave runs on the conversation they cleared. Anthropic
+        # rejects an empty one with a 400, which Pipecat treats as permanent.
+        if not context.get_messages():
+            logger.warning("Skipping LLM call: the conversation was cleared before it ran")
+            return
+        await super()._process_context(context)
+
+
+def build_task(transport, sample_rate: int, gate: MicGate, ball: CrystalBall,
+               admin: AdminCommands, inlet: FrameInlet) -> PipelineWorker:
     audio_tags = uses_dialogue_api(env("ELEVENLABS_MODEL", "eleven_flash_v2_5"))
     stt = DeepgramSTTService(
         api_key=os.environ["DEEPGRAM_API_KEY"],
@@ -128,15 +140,15 @@ def build_task(transport, sample_rate: int, gate: MicGate, ball: CrystalBall) ->
             keyterm=list(persona.STT_KEYTERMS),
         ),
     )
-    llm = AnthropicLLMService(
+    llm = WitchLLM(
         api_key=os.environ["ANTHROPIC_API_KEY"],
-        settings=AnthropicLLMService.Settings(
+        settings=WitchLLM.Settings(
             model=env("LLM_MODEL", "claude-haiku-5-5"),
             system_instruction=persona.system_prompt(audio_tags=audio_tags),
             max_tokens=150,  # hard cap on rambling
             # Haiku 5.5 thinks adaptively unless told not to, and thinking tokens count
             # against max_tokens: replies came back empty or cut off mid-word.
-            thinking=AnthropicLLMService.ThinkingConfig(type="disabled"),
+            thinking=WitchLLM.ThinkingConfig(type="disabled"),
             # (no temperature: current Claude models reject it)
         ),
     )
@@ -184,6 +196,8 @@ def build_task(transport, sample_rate: int, gate: MicGate, ball: CrystalBall) ->
         gate,
         stt,
         TranscriptLogger(),
+        admin,  # "sudo ..." commands never reach the witch
+        inlet,  # greetings and stage directions from the presence controller
         aggregators.user(),
         llm,
         LLMResponseLogger(),
@@ -210,6 +224,9 @@ def build_task(transport, sample_rate: int, gate: MicGate, ball: CrystalBall) ->
             enable_metrics=True,
         ),
         idle_timeout_secs=None,  # default would shut the bot down after 5 quiet minutes
+        # Default carries on with the dead service, leaving a witch who never answers.
+        # Ending instead lets systemd restart her.
+        processor_unusable_policy=ProcessorUnusablePolicy.END,
     )
 
 
@@ -241,23 +258,28 @@ async def main():
     await eyes.set(False)  # known state, whatever a previous run left on
     await ball.turn_off()
     transport = build_transport(sample_rate)
-    task = build_task(transport, sample_rate, gate, ball)
+    admin = AdminCommands(eyes, ball)
+    inlet = FrameInlet()
+    task = build_task(transport, sample_rate, gate, ball, admin, inlet)
     runner = WorkerRunner(handle_sigint=True, handle_sigterm=True)  # sigterm: clean stop under systemd
 
     side_tasks = []
     if args.always_present:
-        await task.queue_frames([LLMMessagesUpdateFrame(
-            messages=[{"role": "user", "content": persona.arrival_direction(1)}],
-            run_llm=True,
-        )])
+        async def reset():
+            await ball.turn_off()
+            await inlet.queue_frames([greeting(1)])
+        admin.reset = reset
+        await inlet.queue_frames([greeting(1)])
     else:
         controller = PresenceController(
-            task, gate,
+            inlet, gate,
             engage_dist=env("ENGAGE_DIST", 250.0, float),
             leave_secs=env("LEAVE_SECS", 8.0, float),
             max_session_secs=env("MAX_SESSION_SECS", 180.0, float),
             eyes=eyes, eyes_hours=env("EYES_HOURS", (7, 18), parse_hours), ball=ball,
+            admin=admin,
         )
+        admin.reset = controller.reset
         start_mqtt(controller, asyncio.get_running_loop(),
                    host=env("MQTT_HOST", "localhost"), port=env("MQTT_PORT", 1883, int),
                    topic=env("PRESENCE_TOPIC", "halloween/presence"),

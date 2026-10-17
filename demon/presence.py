@@ -5,8 +5,12 @@ module turns that into conversation events:
 
   IDLE ──(someone within ENGAGE_DIST)────▶ ENGAGED  (reset chat, mic open, greet)
   ENGAGED ──(nobody for LEAVE_SECS)──────▶ IDLE     (reset chat, mic closed)
-  ENGAGED ──(MAX_SESSION_SECS elapsed)───▶ COOLDOWN (say farewell, mic closed)
+  ENGAGED ──(MAX_SESSION_SECS elapsed)───▶ COOLDOWN (say farewell, commands only)
   COOLDOWN ──(nobody for LEAVE_SECS)─────▶ IDLE
+  ENGAGED/COOLDOWN ──("sudo reset")──────▶ ENGAGED  (reset chat, greet afresh)
+
+In COOLDOWN the mic stays open but only admin commands (demon/admin.py) get
+through, so "sudo reset" can start a new chat with the same visitors.
 
 Expected MQTT payload on PRESENCE_TOPIC (JSON), published whenever it
 changes or at ~1 Hz:
@@ -18,7 +22,7 @@ pixels too). Omit "nearest" to engage on count alone.
 
 During eyes_hours (daytime: they're too bright after dark) the eyes light up
 whenever anyone is in view, near or far, and go off LEAVE_SECS after the
-last sighting. The crystal ball is switched off whenever visitors leave.
+last sighting, unless an admin command has pinned them on or off. The crystal ball is switched off whenever visitors leave.
 
 The mic is gated closed while IDLE, so you don't pay to stream the street
 to the speech-to-text service all evening, and the demon can't be woken by
@@ -40,10 +44,12 @@ from pipecat.frames.frames import (
     InputAudioRawFrame,
     LLMMessagesAppendFrame,
     LLMMessagesUpdateFrame,
+    StartFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from . import persona
+from .admin import AdminCommands
 from .lights import CrystalBall, Light, in_hours
 
 
@@ -51,6 +57,46 @@ class State(Enum):
     IDLE = "idle"
     ENGAGED = "engaged"
     COOLDOWN = "cooldown"
+
+
+def greeting(count: int) -> LLMMessagesUpdateFrame:
+    """Starts a fresh conversation with a greeting for this many visitors."""
+    return LLMMessagesUpdateFrame(
+        messages=[{"role": "user", "content": persona.arrival_direction(count)}],
+        run_llm=True,
+    )
+
+
+class FrameInlet(FrameProcessor):
+    """Where the presence controller's frames join the pipeline. Sits just before
+    the user aggregator.
+
+    task.queue_frames() would start them at the mic, behind every audio frame
+    queued for Deepgram. When the connection to Deepgram stalls, that queue
+    stalls too, and a greeting can sit there long enough to arrive after the
+    visitors have gone. Frames queued before the pipeline starts wait for it.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._started = False
+        self._early: list[Frame] = []
+
+    async def queue_frames(self, frames: list[Frame]):
+        if not self._started:
+            self._early += frames
+            return
+        for frame in frames:
+            await self.push_frame(frame)
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        await self.push_frame(frame, direction)
+        if isinstance(frame, StartFrame):
+            self._started = True
+            for early in self._early:
+                await self.push_frame(early)
+            self._early = []
 
 
 class MicGate(FrameProcessor):
@@ -102,8 +148,10 @@ class PresenceController:
 
     def __init__(self, task, gate: MicGate, *, engage_dist: float, leave_secs: float,
                  max_session_secs: float, eyes: Light | None = None,
-                 eyes_hours: tuple[int, int] = (8, 17), ball: CrystalBall | None = None):
+                 eyes_hours: tuple[int, int] = (8, 17), ball: CrystalBall | None = None,
+                 admin: AdminCommands | None = None):
         self._task = task
+        self._admin = admin
         self._eyes = eyes
         self._eyes_hours = eyes_hours
         self._ball = ball
@@ -113,6 +161,7 @@ class PresenceController:
         self._max_session = max_session_secs
         self.state = State.IDLE
         self._last_seen = 0.0
+        self._last_count = 0
         self._session_start = 0.0
         self._told_count = 0
         self._new_count = 0
@@ -144,6 +193,7 @@ class PresenceController:
 
         if count > 0:
             self._last_seen = time.monotonic()
+            self._last_count = count
 
         close_enough = count > 0 and (nearest is None or float(nearest) <= self._engage_dist)
         if self.state == State.IDLE and close_enough:
@@ -170,7 +220,7 @@ class PresenceController:
     async def _tick(self):
         now = time.monotonic()
         gone = now - self._last_seen > self._leave_secs
-        if self._eyes:
+        if self._eyes and self._eyes.forced is None:
             await self._eyes.set(not gone and in_hours(self._eyes_hours, datetime.now()))
 
         if self.state == State.ENGAGED:
@@ -179,20 +229,26 @@ class PresenceController:
             elif now - self._session_start > self._max_session:
                 logger.info("Session time limit reached — saying farewell")
                 self.state = State.COOLDOWN
+                self._commands_only(True)
                 await self._task.queue_frames([
                     LLMMessagesAppendFrame(
                         messages=[{"role": "user", "content": persona.WRAP_UP_DIRECTION}],
                         run_llm=True,
                     )
                 ])
-                # Close the mic after the farewell has had time to play.
-                asyncio.get_running_loop().call_later(6.0, self._close_gate_if_cooldown)
         elif self.state == State.COOLDOWN and gone:
             await self._disengage("cooldown over")
 
-    def _close_gate_if_cooldown(self):
-        if self.state == State.COOLDOWN:
-            self._gate.is_open = False
+    def _commands_only(self, on: bool):
+        if self._admin:
+            self._admin.commands_only = on
+
+    async def reset(self):
+        """Admin "sudo reset": start over as if the visitors had just walked up."""
+        logger.info(f"Reset from {self.state.value}")
+        if self._ball:
+            await self._ball.turn_off()
+        await self._engage(max(1, self._last_count))
 
     async def _engage(self, count: int):
         logger.info(f"Engaging: {count} visitor(s)")
@@ -200,17 +256,14 @@ class PresenceController:
         self._session_start = time.monotonic()
         self._told_count, self._new_count = count, 0
         self._gate.is_open = True
-        await self._task.queue_frames([
-            LLMMessagesUpdateFrame(
-                messages=[{"role": "user", "content": persona.arrival_direction(count)}],
-                run_llm=True,
-            )
-        ])
+        self._commands_only(False)
+        await self._task.queue_frames([greeting(count)])
 
     async def _disengage(self, why: str):
         logger.info(f"Back to idle ({why}); clearing conversation")
         self.state = State.IDLE
         self._gate.is_open = False
+        self._commands_only(False)
         if self._ball:
             await self._ball.turn_off()
         await self._task.queue_frames([LLMMessagesUpdateFrame(messages=[], run_llm=False)])

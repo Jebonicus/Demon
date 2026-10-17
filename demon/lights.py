@@ -92,6 +92,13 @@ class Light:
         self.pin = pin
         self.name = name
         self.is_on = None  # unknown until first written
+        self.forced: bool | None = None  # pinned on/off by an admin command; None = automatic
+
+    async def force(self, on: bool | None):
+        """Pin the light on or off, whatever automatic control wants; None hands it back."""
+        self.forced = on
+        if on is not None:
+            await self.set(on)
 
     async def set(self, on: bool):
         if on == self.is_on:
@@ -155,10 +162,13 @@ class CrystalBall:
     def is_on(self) -> bool:
         return bool(self._light.is_on)
 
-    async def turn_on(self):
+    async def turn_on(self, hold: bool = False):
+        """hold: skip the max_on_secs auto-off (for an admin command)."""
         if self._auto_off:
             self._auto_off.cancel()
-        self._auto_off = asyncio.create_task(self._off_later())
+            self._auto_off = None
+        if not hold:
+            self._auto_off = asyncio.create_task(self._off_later())
         await self._light.set(True)
 
     async def turn_off(self):
